@@ -226,13 +226,16 @@ jobs:
           cp AdaptixClient/AdaptixClient.exe dist/
           cd dist
           windeployqt6 --release --no-translations AdaptixClient.exe
-          # Copy MinGW runtime DLLs that windeployqt6 doesn't handle
-          cp /mingw64/bin/libgcc_s_seh-1.dll .
-          cp /mingw64/bin/libstdc++-6.dll .
-          cp /mingw64/bin/libwinpthread-1.dll .
-          # Copy OpenSSL DLLs (needed for Qt6::Network / WebSockets)
-          cp /mingw64/bin/libcrypto-3-x64.dll . 2>/dev/null || true
-          cp /mingw64/bin/libssl-3-x64.dll . 2>/dev/null || true
+          # Copy ALL MinGW runtime dependencies that windeployqt6 misses
+          ldd AdaptixClient.exe | grep '/mingw64/bin/' | awk '{print $3}' | while read dll; do
+            cp -n "$dll" . 2>/dev/null || true
+          done
+          # Also scan Qt DLLs for their dependencies
+          for qtdll in *.dll; do
+            ldd "$qtdll" 2>/dev/null | grep '/mingw64/bin/' | awk '{print $3}' | while read dll; do
+              cp -n "$dll" . 2>/dev/null || true
+            done
+          done
 
       - name: Upload Client
         uses: actions/upload-artifact@v4
