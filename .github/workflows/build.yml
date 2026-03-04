@@ -50,7 +50,7 @@ jobs:
       - name: Build Extenders
         run: make extenders
 
-      - name: Upload Server
+      - name: Upload Server (with Extenders)
         uses: actions/upload-artifact@v4
         with:
           name: adaptix-server-linux
@@ -59,13 +59,7 @@ jobs:
             dist/profile.yaml
             dist/404page.html
             dist/ssl_gen.sh
-          retention-days: 30
-
-      - name: Upload Extenders
-        uses: actions/upload-artifact@v4
-        with:
-          name: adaptix-extenders
-          path: dist/extenders/
+            dist/extenders/
           retention-days: 30
 
   # ============================================
@@ -107,36 +101,84 @@ jobs:
           retention-days: 30
 
   # ============================================
-  # Client - macOS
+  # Client - macOS (.app bundle + DMG)
   # ============================================
   build-client-macos:
     name: Client (macOS)
-    runs-on: macos-latest
+    runs-on: macos-13
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Qt 6 via aqtinstall
+        run: |
+          pip3 install aqtinstall
+          aqt install-qt mac desktop 6.9.2 clang_64 \
+            -m qtwebsockets qtnetworkauth \
+            -O $HOME/Qt
+          echo "$HOME/Qt/6.9.2/macos/bin" >> $GITHUB_PATH
+
       - name: Install dependencies
-        run: brew install cmake openssl qt@6
+        run: brew install cmake openssl@3
 
       - name: Build Client
         run: |
-          export PATH="$(brew --prefix qt@6)/bin:$PATH"
+          export QT_DIR="$HOME/Qt/6.9.2/macos"
+          export CMAKE_PREFIX_PATH="$QT_DIR"
           cd AdaptixClient
-          cmake . -DCMAKE_PREFIX_PATH=$(brew --prefix qt@6)
+          cmake . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_DIR"
           make -j$(sysctl -n hw.ncpu)
 
-      - name: Create App Bundle
+      - name: Create .app bundle and embed Qt libs
         run: |
-          mkdir -p dist
-          mv AdaptixClient/AdaptixClient dist/
-          $(brew --prefix qt@6)/bin/macdeployqt dist/AdaptixClient || true
+          export QT_DIR="$HOME/Qt/6.9.2/macos"
+          APP_DIR="dist/AdaptixClient.app/Contents"
+          mkdir -p "$APP_DIR/MacOS"
+          mkdir -p "$APP_DIR/Resources"
+
+          cp AdaptixClient/AdaptixClient "$APP_DIR/MacOS/AdaptixClient"
+
+          cat > "$APP_DIR/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>AdaptixClient</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.adaptix.client</string>
+            <key>CFBundleName</key>
+            <string>AdaptixClient</string>
+            <key>CFBundleVersion</key>
+            <string>1.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>12.0</string>
+          </dict>
+          </plist>
+          PLIST
+
+          if [ -f AdaptixClient/Resources/Logo.png ]; then
+            cp AdaptixClient/Resources/Logo.png "$APP_DIR/Resources/"
+          fi
+
+          "$QT_DIR/bin/macdeployqt" dist/AdaptixClient.app -always-overwrite
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "AdaptixClient" \
+            -srcfolder dist/AdaptixClient.app \
+            -ov -format UDZO \
+            dist/AdaptixClient.dmg
 
       - name: Upload Client
         uses: actions/upload-artifact@v4
         with:
           name: adaptix-client-macos
-          path: dist/AdaptixClient
+          path: dist/AdaptixClient.dmg
           retention-days: 30
 
   # ============================================
@@ -172,7 +214,9 @@ jobs:
       - name: Build Client
         run: |
           cd AdaptixClient
-          cmake . -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake . -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64
           mingw32-make -j$(nproc)
 
       - name: Deploy Qt dependencies
@@ -180,7 +224,7 @@ jobs:
           mkdir -p dist
           cp AdaptixClient/AdaptixClient.exe dist/
           cd dist
-          windeployqt-qt6.exe --release --no-translations AdaptixClient.exe
+          windeployqt-qt6 --release --no-translations AdaptixClient.exe
 
       - name: Upload Client
         uses: actions/upload-artifact@v4
@@ -208,20 +252,18 @@ jobs:
         run: |
           cd artifacts
 
-          # Server + Extenders
-          mkdir -p server-bundle/extenders
-          cp -r adaptix-server-linux/* server-bundle/
-          cp -r adaptix-extenders/* server-bundle/extenders/
-          chmod +x server-bundle/adaptixserver server-bundle/ssl_gen.sh
-          tar -czvf adaptix-server-linux-amd64.tar.gz -C server-bundle .
+          # Server + Extenders (already bundled together)
+          cd adaptix-server-linux
+          chmod +x adaptixserver ssl_gen.sh
+          tar -czvf ../adaptix-server-linux-amd64.tar.gz .
+          cd ..
 
-          # Linux Client (AppImage already self-contained)
+          # Linux Client
           chmod +x adaptix-client-linux/AdaptixClient-x86_64.AppImage
           cp adaptix-client-linux/AdaptixClient-x86_64.AppImage adaptix-client-linux-x86_64.AppImage
 
           # macOS Client
-          chmod +x adaptix-client-macos/AdaptixClient 2>/dev/null || true
-          tar -czvf adaptix-client-macos.tar.gz -C adaptix-client-macos .
+          cp adaptix-client-macos/AdaptixClient.dmg adaptix-client-macos.dmg
 
           # Windows Client
           cd adaptix-client-windows && zip -r ../adaptix-client-windows.zip . && cd ..
@@ -232,7 +274,7 @@ jobs:
           files: |
             artifacts/adaptix-server-linux-amd64.tar.gz
             artifacts/adaptix-client-linux-x86_64.AppImage
-            artifacts/adaptix-client-macos.tar.gz
+            artifacts/adaptix-client-macos.dmg
             artifacts/adaptix-client-windows.zip
           draft: false
           prerelease: false
@@ -258,11 +300,10 @@ jobs:
           name: adaptix-server-linux
           path: AdaptixServer/server-dist/
 
-      - name: Download Extenders artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: adaptix-extenders
-          path: AdaptixServer/server-dist/extenders/
+      - name: Verify artifacts
+        run: |
+          echo "=== Server dist contents ==="
+          ls -laR AdaptixServer/server-dist/
 
       - uses: docker/setup-buildx-action@v3
 
