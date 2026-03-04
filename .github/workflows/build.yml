@@ -206,35 +206,52 @@ jobs:
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-make
+            mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-qt6-websockets
             mingw-w64-x86_64-qt6-declarative
             mingw-w64-x86_64-qt6-svg
             mingw-w64-x86_64-openssl
-            make
 
-      - name: Build and Deploy Client
+      - name: Build Client
         run: |
           cd AdaptixClient
-          cmake . -G "MinGW Makefiles" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64
-          mingw32-make -j$(nproc)
-          cd ..
+          cmake -S . -B cmake-build-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build cmake-build-release --config Release
+
+      - name: Deploy Client
+        run: |
           mkdir -p dist
-          cp AdaptixClient/AdaptixClient.exe dist/
+          cp AdaptixClient/cmake-build-release/AdaptixClient.exe dist/
           cd dist
-          windeployqt6 --release --no-translations AdaptixClient.exe
-          # Copy ALL MinGW runtime dependencies that windeployqt6 misses
-          ldd AdaptixClient.exe | grep '/mingw64/bin/' | awk '{print $3}' | while read dll; do
-            cp -n "$dll" . 2>/dev/null || true
-          done
-          # Also scan Qt DLLs for their dependencies
-          for qtdll in *.dll; do
-            ldd "$qtdll" 2>/dev/null | grep '/mingw64/bin/' | awk '{print $3}' | while read dll; do
-              cp -n "$dll" . 2>/dev/null || true
-            done
+          windeployqt.exe AdaptixClient.exe
+          # Copy MinGW runtime DLLs (matching official build.bat)
+          for dll in \
+            libwinpthread-1.dll \
+            libgcc_s_seh-1.dll \
+            libstdc++-6.dll \
+            libfreetype-6.dll \
+            libharfbuzz-0.dll \
+            libmd4c.dll \
+            libpng16-16.dll \
+            zlib1.dll \
+            libb2-1.dll \
+            libdouble-conversion.dll \
+            libicuin*.dll \
+            libicuuc*.dll \
+            libpcre2-16-0.dll \
+            libbrotlidec.dll \
+            libzstd.dll \
+            libbz2-1.dll \
+            libglib-2.0-0.dll \
+            libgraphite2.dll \
+            libbrotlicommon.dll \
+            libicudt*.dll \
+            libpcre2-8-0.dll \
+            libintl-8.dll \
+            libiconv-2.dll; do
+            cp -n /mingw64/bin/$dll . 2>/dev/null || true
           done
 
       - name: Upload Client
