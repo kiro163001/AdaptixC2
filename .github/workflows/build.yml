@@ -1,56 +1,42 @@
 name: Build AdaptixC2
 
-"on":
+on:
   push:
-    branches:
-      - main
-      - master
-    tags:
-      - "v*"
+    branches: [main, master]
+    tags: ["v*"]
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
 env:
   GO_VERSION: '1.25.4'
-  QT_VERSION: '6.7.0'
 
 jobs:
   # ============================================
-  # 编译 Server 和 Extenders (Linux)
+  # Server + Extenders (Linux only)
   # ============================================
   build-server:
-    name: Build Server & Extenders
+    name: Server & Extenders (Linux)
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git \
-            mingw-w64 \
-            make \
-            gcc \
-            g++ \
-            g++-mingw-w64 \
-            build-essential \
-            libssl-dev \
-            zlib1g-dev
+            git mingw-w64 make gcc g++ g++-mingw-w64 \
+            build-essential libssl-dev zlib1g-dev
 
       - name: Setup Go ${{ env.GO_VERSION }}
         run: |
-          wget https://go.dev/dl/go${{ env.GO_VERSION }}.linux-amd64.tar.gz -O /tmp/go.tar.gz
+          wget -q https://go.dev/dl/go${{ env.GO_VERSION }}.linux-amd64.tar.gz -O /tmp/go.tar.gz
           sudo rm -rf /usr/local/go
           sudo tar -C /usr/local -xzf /tmp/go.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
 
-      - name: Setup go-win7 (for Gopher Agent Windows 7 support)
+      - name: Setup go-win7
         run: |
           git clone https://github.com/Adaptix-Framework/go-win7 /tmp/go-win7
           sudo mv /tmp/go-win7 /usr/lib/
@@ -58,27 +44,24 @@ jobs:
           cd /usr/lib/go-win7/src/runtime
           for f in *.h; do sudo ln -sf /usr/lib/go-win7/src/runtime/$f /usr/lib/go-win7/pkg/include/$f; done
 
-      - name: Verify Go installation
-        run: go version
-
       - name: Build Server
         run: make server
 
       - name: Build Extenders
         run: make extenders
 
-      - name: Upload Server artifacts
+      - name: Upload Server
         uses: actions/upload-artifact@v4
         with:
           name: adaptix-server-linux
           path: |
             dist/adaptixserver
-            dist/profile.json
+            dist/profile.yaml
             dist/404page.html
             dist/ssl_gen.sh
           retention-days: 30
 
-      - name: Upload Extenders artifacts
+      - name: Upload Extenders
         uses: actions/upload-artifact@v4
         with:
           name: adaptix-extenders
@@ -86,83 +69,70 @@ jobs:
           retention-days: 30
 
   # ============================================
-  # 编译 Client (Linux with Qt6)
+  # Client - Linux (AppImage via Docker)
   # ============================================
   build-client-linux:
-    name: Build Client (Linux)
+    name: Client (Linux AppImage)
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Qt6 and dependencies
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Client via Docker
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: build-client
+          load: true
+          tags: adaptix-client-builder:latest
+          cache-from: type=gha,scope=client
+          cache-to: type=gha,mode=max,scope=client
+
+      - name: Extract AppImage
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            gcc \
-            g++ \
-            build-essential \
-            make \
-            cmake \
-            mingw-w64 \
-            g++-mingw-w64 \
-            libssl-dev \
-            qt6-base-dev \
-            qt6-base-private-dev \
-            libxkbcommon-dev \
-            qt6-websockets-dev \
-            qt6-declarative-dev \
-            libgl1-mesa-dev \
-            libxcb-xinerama0
+          mkdir -p dist
+          docker create --name client-extract adaptix-client-builder:latest
+          docker cp client-extract:/client-dist/AdaptixClient-x86_64.AppImage dist/
+          docker rm client-extract
 
-      - name: Build Client
-        run: make client-fast
-
-      - name: Upload Client artifact
+      - name: Upload Client
         uses: actions/upload-artifact@v4
         with:
           name: adaptix-client-linux
-          path: dist/AdaptixClient
+          path: dist/AdaptixClient-x86_64.AppImage
           retention-days: 30
 
   # ============================================
-  # 编译 Client (macOS)
+  # Client - macOS
   # ============================================
   build-client-macos:
-    name: Build Client (macOS)
+    name: Client (macOS)
     runs-on: macos-latest
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Qt6 via Homebrew
-        run: |
-          brew install cmake openssl qt@6
-
-      - name: Setup Qt environment
-        run: |
-          echo "$(brew --prefix qt@6)/bin" >> $GITHUB_PATH
-          echo "Qt6_DIR=$(brew --prefix qt@6)/lib/cmake/Qt6" >> $GITHUB_ENV
-          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt@6)" >> $GITHUB_ENV
+      - name: Install dependencies
+        run: brew install cmake openssl qt@6
 
       - name: Build Client
         run: |
+          export PATH="$(brew --prefix qt@6)/bin:$PATH"
           cd AdaptixClient
           cmake . -DCMAKE_PREFIX_PATH=$(brew --prefix qt@6)
           make -j$(sysctl -n hw.ncpu)
 
-      - name: Create macOS App Bundle
+      - name: Create App Bundle
         run: |
           mkdir -p dist
           mv AdaptixClient/AdaptixClient dist/
-          cd dist
-          # 使用 macdeployqt 打包依赖
-          $(brew --prefix qt@6)/bin/macdeployqt AdaptixClient || true
+          $(brew --prefix qt@6)/bin/macdeployqt dist/AdaptixClient || true
 
-      - name: Upload Client artifact
+      - name: Upload Client
         uses: actions/upload-artifact@v4
         with:
           name: adaptix-client-macos
@@ -170,46 +140,49 @@ jobs:
           retention-days: 30
 
   # ============================================
-  # 编译 Client (Windows)
+  # Client - Windows (MSYS2 MinGW)
   # ============================================
   build-client-windows:
-    name: Build Client (Windows)
+    name: Client (Windows)
     runs-on: windows-latest
-    
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Qt6
-        uses: jurplel/install-qt-action@v4
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          version: ${{ env.QT_VERSION }}
-          host: windows
-          target: desktop
-          arch: win64_msvc2019_64
-          modules: qtwebsockets
-
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-websockets
+            mingw-w64-x86_64-qt6-declarative
+            mingw-w64-x86_64-qt6-svg
+            mingw-w64-x86_64-openssl
+            make
 
       - name: Build Client
-        shell: cmd
         run: |
           cd AdaptixClient
-          cmake . -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
-          nmake
+          cmake . -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          mingw32-make -j$(nproc)
 
       - name: Deploy Qt dependencies
-        shell: cmd
         run: |
-          mkdir dist
-          copy AdaptixClient\AdaptixClient.exe dist\
+          mkdir -p dist
+          cp AdaptixClient/AdaptixClient.exe dist/
           cd dist
-          windeployqt.exe --release --no-translations AdaptixClient.exe
+          windeployqt-qt6.exe --release --no-translations AdaptixClient.exe
 
-      - name: Upload Client artifact
+      - name: Upload Client
         uses: actions/upload-artifact@v4
         with:
           name: adaptix-client-windows
@@ -217,68 +190,50 @@ jobs:
           retention-days: 30
 
   # ============================================
-  # 打包完整发布版本
+  # Release (tag push only)
   # ============================================
   package-release:
     name: Package Release
     needs: [build-server, build-client-linux, build-client-macos, build-client-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    
+
     steps:
-      - name: Download Server artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: adaptix-server-linux
-          path: release/server/
-
-      - name: Download Extenders artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: adaptix-extenders
-          path: release/server/extenders/
-
-      - name: Download Linux Client artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: adaptix-client-linux
-          path: release/client-linux/
-
-      - name: Download macOS Client artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: adaptix-client-macos
-          path: release/client-macos/
-
-      - name: Download Windows Client artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: adaptix-client-windows
-          path: release/client-windows/
-
-      - name: Set executable permissions
-        run: |
-          chmod +x release/server/adaptixserver
-          chmod +x release/server/ssl_gen.sh
-          chmod +x release/client-linux/AdaptixClient
-          chmod +x release/client-macos/AdaptixClient || true
+          path: artifacts/
 
       - name: Create archives
         run: |
-          cd release
-          tar -czvf adaptix-server-linux-amd64.tar.gz server/
-          tar -czvf adaptix-client-linux-amd64.tar.gz client-linux/
-          tar -czvf adaptix-client-macos.tar.gz client-macos/
-          zip -r adaptix-client-windows.zip client-windows/
+          cd artifacts
 
-      - name: Create Release
+          # Server + Extenders
+          mkdir -p server-bundle/extenders
+          cp -r adaptix-server-linux/* server-bundle/
+          cp -r adaptix-extenders/* server-bundle/extenders/
+          chmod +x server-bundle/adaptixserver server-bundle/ssl_gen.sh
+          tar -czvf adaptix-server-linux-amd64.tar.gz -C server-bundle .
+
+          # Linux Client (AppImage already self-contained)
+          chmod +x adaptix-client-linux/AdaptixClient-x86_64.AppImage
+          cp adaptix-client-linux/AdaptixClient-x86_64.AppImage adaptix-client-linux-x86_64.AppImage
+
+          # macOS Client
+          chmod +x adaptix-client-macos/AdaptixClient 2>/dev/null || true
+          tar -czvf adaptix-client-macos.tar.gz -C adaptix-client-macos .
+
+          # Windows Client
+          cd adaptix-client-windows && zip -r ../adaptix-client-windows.zip . && cd ..
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            release/adaptix-server-linux-amd64.tar.gz
-            release/adaptix-client-linux-amd64.tar.gz
-            release/adaptix-client-macos.tar.gz
-            release/adaptix-client-windows.zip
+            artifacts/adaptix-server-linux-amd64.tar.gz
+            artifacts/adaptix-client-linux-x86_64.AppImage
+            artifacts/adaptix-client-macos.tar.gz
+            artifacts/adaptix-client-windows.zip
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -286,17 +241,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================
-  # Docker 镜像构建 (可选)
+  # Docker Image (main/master push or tag)
   # ============================================
   build-docker:
-    name: Build Docker Image
-    runs-on: ubuntu-latest
+    name: Docker Image
     needs: [build-server]
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Download Server artifacts
         uses: actions/download-artifact@v4
@@ -310,17 +264,16 @@ jobs:
           name: adaptix-extenders
           path: AdaptixServer/server-dist/extenders/
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -331,7 +284,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
 
-      - name: Build and push Docker image
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
