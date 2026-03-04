@@ -105,14 +105,14 @@ jobs:
   # ============================================
   build-client-macos:
     name: Client (macOS)
-    runs-on: macos-13
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Qt 6 via aqtinstall
         run: |
-          pip3 install aqtinstall
+          pip3 install aqtinstall --break-system-packages
           aqt install-qt mac desktop 6.9.2 clang_64 \
             -m qtwebsockets qtnetworkauth \
             -O $HOME/Qt
